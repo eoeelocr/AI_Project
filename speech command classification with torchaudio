@@ -1,0 +1,366 @@
+# Speech Command Classificaion with torchaudio
+# 이 튜토리얼에서는 오디오 데이터 세트의 형식을 올바르게 지정한 다음 데이터 세트에서 오디오 분류기 네트워크를 훈련/테스트하는 방법을 보여준다.
+
+# 웹사이트의 지침에 따라 설치할 수 있는 torchaudio와 같은 일반적인 토치 패키지를 가져온다.
+
+# Google Colab에서는 CPU 및 GPU 런타임을 선택 할 수 있다. 원하는 런타임에 따라 하나의 줄을 주석 처리 설정
+CPU:  # CPU 런타임용
+!pip install pydub torch==1.7.0+cpu torchvision==0.8.1+cpu torchaudio==0.7.0 -f https://download.pytorch.org/whl/torch_stable.html
+
+GPU:  # GPU 런타임용 (cu101은 CUDA 10.1 을 타나낸다. 사용중인 GPU 버전과 일치해야한다.
+!pip install pydub torch==1.7.0+cu101 torchvision==0.8.1+cu101 torchaudio==0.7.0 -f https://download.pytorch.org/whl/torch_stable.html
+
+# PyTorch와 관련된 모듈 및 라이브러리를 가져오고, 오디오 처리를 위한 'torchaudio' 라이브러리도 가져온다.
+import torch       # PyTorch(딥러닝 모델 구축, 훈련하는 데 사용되는 주요 라이브러리 중 하나) 라이브러리
+import torch.nn as nn      # PyTorch의 'nn' 모듈. 신경망 구조를 정의하는 데 사용되며, 다양한 층(layer) 및 손실 함수(loss function) 정의
+import torch.nn.functional as F    # PyTorch의 'F' 모듈. 다양한 활성화 함수 및 연산 함수 포함 (주로 신경망 내부에서 사용)
+import torch.optim as optim      # PyTorch의 'optim' 모듈. 최적화 알고리즘 제공, 모델의 가중치를 업데이트 하는 데 사용  (ex.Adam, SGD)
+import torchaudio      # 'torchaudio'(오디오 데이터를 다루고 처리하는 데 사용, 음성 처리 및 음성 인식 작업에 유용) 라이브러리 가져온다
+import sys    # Python의 'sys' 모듈. 이 모듈은 시스템과 관련된 작업을 수행할 때 사용
+
+# 데이터 시각화 및 오디오 재생 관련 모듈
+import matplotlib.pyplot as plt  # Matplotlib(데이터 시각화 및 그래프 작성을 위한 파이썬 라이브러리) 라이브러리 가져옴. 주로 그래프 및 플롯(plot)을 그릴 때 사용, 코드에서 데이터나 결과를 시각화 하는데 사용
+import IPython.display as ipd    # IPython 라이브러리의 'display' 모듈을 가져옴. 노트북 환경에서 다양한 미디어 요소를 표시하고 재생하는 데 사용. 주로 오디오 또는 비디오를 노트북 내에서 재생할 때 활용
+
+from tqdm import tqdm  # 'tqdm' 모듈에서 'tqdm' 함수를 가져옴. 'tqdm'은 진행률 표시를 생성하는 데 사용되며, 반복 작업이나 데이터 처리 작업 중에 진행 상황을 시각적으로 나타낼 때 유용. 코드에서 훈련 반복 중 진행률을 표시할 때 사용
+
+# 현재 사용 가능한 GPU가 있다면 GPU를 사용하고, 그렇지 않다면 CPU 사용하도록 설정
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 디바이스 설정
+print(device) # CPU-> CPU , GPU-> cuda
+
+# Importing the Dataset 
+# 'torchaudio' 라이브러리에서 제공하는 SPEECHCOMMANDS 데이터셋을 가져오기
+from torchaudio.datasets import SPEECHCOMMANDS # 데이터셋 클래스 (음성 명령 데이터를 다루는 데 사용)
+import os   # Python의 기본 모듈인 'os'(운영 체제와 관련된 작업 수행하는 데 사용 / 파일 경로 조작) 가져옴. 
+
+
+class SubsetSC(SPEECHCOMMANDS):    # 'SPEECHCOMMANDS' 데이터셋 상속-> 새로운 클래스 'SubsetSC' 정의 ( 특정 부분 데이터셋(훈련,테스트 등)을 생성하는 데 사용
+    def __init__(self, subset: str = None):       # 'SubsetSC' 클래스의 생성자 메서드/ 데이터셋의 부분집합(subset) 지정 후 초기화
+        super().__init__("./", download=True)   # 부모 클래스 'SPEECHCOMMANDS'의 생성자 호출하여 데이터셋 초기화
+        # "./" -> 데이터셋을 저장할 디렉터리, 'download = True' -> 데이터셋이 없는 경우 다운로드 할 것인지 
+
+        def load_list(filename):   # 파일에서 목록을 읽어오는 함수 정의 
+            filepath = os.path.join(self._path, filename)
+            with open(filepath) as fileobj:
+                return [os.path.normpath(os.path.join(self._path, line.strip())) for line in fileobj]
+
+        # subset에 따라 데이터셋 분할
+        if subset == "validation":
+            self._walker = load_list("validation_list.txt")   # 사용 X
+        elif subset == "testing":
+            self._walker = load_list("testing_list.txt")
+        elif subset == "training":
+            excludes = load_list("validation_list.txt") + load_list("testing_list.txt")
+            excludes = set(excludes)
+            self._walker = [w for w in self._walker if w not in excludes]
+
+
+train_set = SubsetSC("training")   # 'train_set' 과 'test_set' 객체 생성하여 각각의 데이터셋 준비
+test_set = SubsetSC("testing")
+
+# 'train_set[0]'을 통해 데이터셋의 첫 번째 데이터 포인트(오디오 웨이브폼, 샘플 레이트, 레이블, 스피커 ID, 발화 번호 등 포함) 가져온다. 
+waveform, sample_rate, label, speaker_id, utterance_number = train_set[0]  
+
+# 데이터셋에서 가져온 오디오 웨이브폼의 형태 및 샘플 레이트 정보 출력, 오디오 웨이브폼을 그래프(시간에 따른 변화)로 시각화 하는 부분
+print("Shape of waveform: {}".format(waveform.size()))    # 'waveform'은 PyTorch 텐서로서 오디오 웨이브폼 데이터를 나타냄. 형태 정보는 텐서의 크기이고, 이 경우 '[ 채널 수, 시간(프레임) 길이]'의 형태. 이 출력은 오디오 데이터의 차원을 보여준다
+print("Sample rate of waveform: {}".format(sample_rate))   # 'sample_rate'변수에 저장된 샘플레이트(오디오 데이터에서 초당 샘플 수) 정보 출력. 이 정보는 오디오 데이터를 재생할 때 얼마나 빠르게 재생되어야 하는지를 나타냄 
+
+plt.plot(waveform.t().numpy());   # Matplotlib 사용하여 시각화 그래프 그림 텐서를 NumPy 배열로 변환하고, 그 배열을 시각화 함
+
+# 훈련 데이터셋(train_set)에서 사용된 레이블 목록 추출하고, 이 레이블들을 정렬하여 출력
+labels = sorted(list(set(datapoint[2] for datapoint in train_set)))   # 정렬,리스트변환,추출(중복허용X)
+labels
+
+# Formatting the Data (데이터 형식 지정)
+# 오디오 데이터의 샘플 레이트를 새로운 샘플 레이트로 변환하고, 변환된 오디오 재생하는 부분
+
+new_sample_rate = 8000   # 새로운 샘플레이트 설정
+transform = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=new_sample_rate)   # 오디오의 샘플레이트를 변환하는 transform 객체 생성
+transformed = transform(waveform)  # 생성한 변환 객체 ('transform')을 사용하여 입력 오디오 데이터('waveform')의 샘플 레이트를 새로운 샘플레이트로 변환
+
+ipd.Audio(transformed.numpy(), rate=new_sample_rate)  # 'transformed'를 NumPy 배열로 변환하고, 'new_sample_rate'로 설정하여 오디오 재생
+
+#레이블과 레이블 인덱스 간의 변환 테스트, 디버그하는 데 사용
+def label_to_index(word):   # 레이블'word'를 인수로 받아 해당 레이블이 'labels' 리스트에서의 인덱스 반환
+    return torch.tensor(labels.index(word))  # 레이블이 리스트에서 몇 번째 인덱스에 위치하는 지를 찾아 해당 인덱스 반환
+
+
+def index_to_label(index):   # 'label_to_index'함수의 역함수, 인덱스를 레이블로 다시 변환
+    return labels[index]   # 인덱스를 인수로 받아 해당 인덱스에 해당하는 레이블을 'labels'리스트에서 찾아 반환
+
+
+word_start = "yes"   # 변환을 테스트할 레이블 선택
+index = label_to_index(word_start)   # 레이블'yes'를 'label_to_index'함수 사용하여 해당 레이블의 인덱스로 변환
+word_recovered = index_to_label(index)   # 위에서 얻은 인덱스를 'index_to_label'함수를 사용하여 다시 레이블로 변환
+
+print(word_start, "-->", index, "-->", word_recovered)   # 선택한 레이블, 레이블의 인덱스, 복구된 레이브 룿ㄹ력 
+
+# 데이터로더 설정하고 train_set, test_set을 배치 단위로 불러오고 정리하는 역할
+# 이 코드를 통해 모델을 훈련하고 평가하기 위한 데이터 로딩과 전처리가 이루어짐
+def pad_sequence(batch):   # batch 내의 모든 텐서(tensor)를 동일한 길이로 padding하여 모든 텐서의 크기가 같도록 만듦
+    batch = [item.t() for item in batch]   # 입력으로 주어진 배치 내의 각 텐서를 전치 하여 크기를 맞춘다
+    batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True, padding_value=0.)  # 패딩 적용, 패딩 값은 0으로 설정
+    return batch.permute(0, 2, 1)  
+# 입력으로 받은 배치 내의 모든 오디오 웨이브폼 텐서를 패딩하여 동일한 길이로 만들고, 이를 새로운 형태로 배치한다. -> 모델에 입력으로 제공할 수 있게 된다. 
+# 서로 다른 길이의 시퀀스 데이터를 처리할 때 매우 유용, 시퀀스 데이터의 길이를 일관되게 유지해야 할 때 필요
+
+def collate_fn(batch):   # 데이터 배치를 받아와서 모델에 입력으로 제공하기 위한 형태로 데이터 정리
+
+    # 각 데이터 포인트는 (오디오 웨이브폼*, 샘플레이트, 레이블*, 스피커 ID, 발화 번호)와 같은 형태로 저장되어있다.
+    # 오디오 웨이브폼은 패딩된 형태로 변환, 레이블은 'label_to_index' 함수 사용하여 인덱스로 변환
+    tensors, targets = [], []
+
+    for waveform, _, label, *_ in batch:
+        tensors += [waveform]
+        targets += [label_to_index(label)]
+
+    tensors = pad_sequence(tensors)
+    targets = torch.stack(targets)
+
+    return tensors, targets
+
+
+batch_size = 256  # 배치 크기 설정(한 번에 처리되는 데이터 샘플의 수)
+
+if device == "cuda":    # GPU 사용 시 데이터 로딩을 가속화하기 위한 설정
+    num_workers = 1
+    pin_memory = True
+else:
+    num_workers = 0
+    pin_memory = False
+
+train_loader = torch.utils.data.DataLoader(   # train_set, test_set을 배치 단위로 로드
+    train_set,
+    batch_size=batch_size,
+    shuffle=True,                # train_set은 에포크마다 데이터를 섞기 
+    collate_fn=collate_fn,
+    num_workers=num_workers,
+    pin_memory=pin_memory,
+)
+test_loader = torch.utils.data.DataLoader(
+    test_set,
+    batch_size=batch_size,
+    shuffle=False,             # test_set은 순서대로 데이터 로드
+    drop_last=False,           # 배치 크기로 나누어 떨어지지 않는 마지막 배치를 버릴지 여부 결정
+    collate_fn=collate_fn,
+    num_workers=num_workers,
+    pin_memory=pin_memory,
+)
+
+# Define the Network
+# M5 모델 정의하고 모델의 구조와 파라미터 수 확인
+# M5 모델은 CNN 아키텍처로, Conv1d 레이어와 Batch Normalizaion, MaxPooling 레이어, Fully Connected 레이어로 구성되어있음
+class M5(nn.Module):  # M5 모델은 PyTorch의 'nn.Module'을 상속 받아 정의 됨.
+    def __init__(self, n_input=1, n_output=35, stride=16, n_channel=32):
+    # n_input: 입력 채널 수(오디오 웨이브폼의 채널 수), n_output: 출력 채널 수(모델의 출력 클래스 수), stride: Conv1d 레이어의 스트라이드 값, n_channel: Conv1d 레이어의 출력 채널 수 
+        super().__init__()
+        self.conv1 = nn.Conv1d(n_input, n_channel, kernel_size=80, stride=stride)
+        self.bn1 = nn.BatchNorm1d(n_channel)
+        self.pool1 = nn.MaxPool1d(4)
+        self.conv2 = nn.Conv1d(n_channel, n_channel, kernel_size=3)
+        self.bn2 = nn.BatchNorm1d(n_channel)
+        self.pool2 = nn.MaxPool1d(4)
+        self.conv3 = nn.Conv1d(n_channel, 2 * n_channel, kernel_size=3)
+        self.bn3 = nn.BatchNorm1d(2 * n_channel)
+        self.pool3 = nn.MaxPool1d(4)
+        self.conv4 = nn.Conv1d(2 * n_channel, 2 * n_channel, kernel_size=3)
+        self.bn4 = nn.BatchNorm1d(2 * n_channel)
+        self.pool4 = nn.MaxPool1d(4)
+        self.fc1 = nn.Linear(2 * n_channel, n_output)
+
+    def forward(self, x):  # 모델의 forward 연산 정의, 각 레이어의 연산 수행하고 최종 출력 반환
+        x = self.conv1(x)
+        x = F.relu(self.bn1(x))
+        x = self.pool1(x)
+        x = self.conv2(x)
+        x = F.relu(self.bn2(x))
+        x = self.pool2(x)
+        x = self.conv3(x)
+        x = F.relu(self.bn3(x))
+        x = self.pool3(x)
+        x = self.conv4(x)
+        x = F.relu(self.bn4(x))
+        x = self.pool4(x)
+        x = F.avg_pool1d(x, x.shape[-1])
+        x = x.permute(0, 2, 1)
+        x = self.fc1(x)
+        return F.log_softmax(x, dim=2)
+
+
+model = M5(n_input=transformed.shape[0], n_output=len(labels))  # M5 모델 생성
+model.to(device)   # 모델을 GPU(cuda) 또는 CPU로 이동시킴. 모델이 사용할 하드웨어 설정
+print(model)
+
+def count_parameters(model):  # 모델의 파라미터 수 계산하는 함수 정의 
+    return sum(p.numel() for p in model.parameters() if p.requires_grad) 
+
+
+n = count_parameters(model)
+print("Number of parameters: %s" % n)
+
+# 모델의 최적화와 학습률 스케줄링을 설정하는 부분
+optimizer = optim.Adam(model.parameters(), lr=0.01, weight_decay=0.0001)   # Adam 옵티마이저 생성( 모델의 파라미터를 최적화하는 데 사용)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)  # 학습률 스케줄러 생성( 학습률을 조정하여 훈련 동안 학습률을 점진적으로 줄이는 역할을 함)
+
+# Training and Testing the Network
+# train 함수 : 모델을 사용하여 훈련 데이터를 반복적으로 처리하고 모델 파라미터를 업데이트하여 모델 훈련
+def train(model, epoch, log_interval):
+    model.train()     # 모델을 훈련 모드로 설정
+    for batch_idx, (data, target) in enumerate(train_loader):  # train_loader에서 미니 배치를 가져온다. data: 입력데이터(오디오 웨이브 폼), target: 해당 데이터의 타겟 (레이블)
+
+        data = data.to(device)       # 데이터와 타겟을 GPU 또는 CPU로 이동 (모델과 같은 디바이스에서 데이터를 처리하기 위함)
+        target = target.to(device)
+
+        data = transform(data)  # 데이터에 이전에 정의한 transform 적용 ( 데이터의 샘플링 속도를 변경, 입력을 모델에 맞게 조정하는 데 사용)
+        output = model(data)  # 모델에 입력 데이터를 전달하여 출력을 얻음
+        
+        loss = F.nll_loss(output.squeeze(), target)  # 모델의 출력과 타겟 간의 손실 계산
+        # Negative Log Likelihood(NLL) 손실 사용, 'ouput'을 squeeze하여 차원을 줄임
+
+        optimizer.zero_grad()  # 옵티마이저의 그래디언트 초기화. 새로운 배치에 대한 그래디언트를 계산하기 전에 필요함
+        loss.backward()  # 역전파 -> 손실의 그래디언트 계산
+        optimizer.step()  # 옵티마이저 -> 모델의 파라미터 업데이트 (그래디언트를 사용하여 모델 파라미터 조정하는 단계)
+
+        # 훈련 진행 상황 출력 ( 현재 에폭(epoch) , 배치(batch) , 손실)
+        if batch_idx % log_interval == 0:
+            print(f"Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} ({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}")
+
+        pbar.update(pbar_update)  # 훈련 과정을 시각화하기 위해 진행상황 막대 
+        losses.append(loss.item())   # 훈련 손실을 리스트에 기록 ( 훈련이 진행되는 동안 손실 그래프를 그리는 데 사용)
+
+
+# test 함수에 사용되는 보조 함수들
+def number_of_correct(pred, target):   # 예측값(pred), 실제 타겟값(target) 비교 -> 정확하게 예측된 샘플의 수 계산
+    return pred.squeeze().eq(target).sum().item()
+    # pred.squeeze() : 'pred' 텐서에서 차원이 1인 차원 제거
+    # pred.squeeze().eq(target): 'pred', 'target' 비교 -> 불리언 텐서 생성
+    # sum(): 불리언 텐서 내에서 True인 요소들의 합 계산
+    # item(): 정확한 예측의 개수를 정수로 반환
+    
+def get_likely_index(tensor):  # 모델의 출력 'tensor'에서 가장 확률이 높은 클래스의 인덱스를 찾아 반환
+    return tensor.argmax(dim=-1)  # dim=-1: 가장 안쪽 차원(클래스 차원) 
+
+
+def test(model, epoch):   # 모델의 성능 테스트 (주어진 모델을 사용하여 테스트 데이터를 평가하고 정확도 출력)
+    model.eval()  # 모델을 평가 모드로 설정 
+    correct = 0   # 정확하게 예측된 샘플의 수를 기록하기 위한 변수 초기화
+    for data, target in test_loader:  # data: 입력 데이터(오디오 웨이브 폼), target: 해당 데이터의 타겟(레이블)
+
+        data = data.to(device)  # 데이터와 타겟을 GPU 또는 CPU로 이동
+        target = target.to(device)
+        
+        data = transform(data)    # 데이터에 이전에 정의한 trasform 적용
+        output = model(data)    # 모델에 입력 데이터를 전달하여 출력 얻음
+ 
+        pred = get_likely_index(output)   # 출력에서 가장 확률이 높은 레이블의 인덱스 찾기( 모델의 예측 결과)
+        correct += number_of_correct(pred, target)   # 정확하게 예측된 샘플 수 업데이트 (일치하면 1 반환, 누적)
+
+        pbar.update(pbar_update)  # 테스트 진행 상황 업데이트 
+
+    print(f"\nTest Epoch: {epoch}\tAccuracy: {correct}/{len(test_loader.dataset)} ({100. * correct / len(test_loader.dataset):.0f}%)\n")  # 테스트 결과 출력 (현재 에폭에서의 정확도를 출력 -> 전체 테스트 데이터 셋에 대한 정확도 표시)
+
+
+log_interval = 20    # 학습 중간에 로그를 출력하는 빈도를 설정하는 변수 / 배치마다 학습 손실 출력
+n_epoch = 2    # 학습의 총 에폭 수를 설정하는 변수 / 데이터셋을 몇 번 반복하여 학습할지 결정한다 
+
+pbar_update = 1 / (len(train_loader) + len(test_loader))  # tqdm(진행 상황 바)의 업데이트 비율을 설정하는 변수 
+losses = []  # 학습 중에 발생하는 손실 값을 저장하기 위한 리스트
+
+transform = transform.to(device)  # trasform이 모델과 동일한 디바이스에서 수행되어야 함 -> 디바이스에 맞게 변환 설정
+with tqdm(total=n_epoch) as pbar:  
+    for epoch in range(1, n_epoch + 1):  # 에폭 수 만큼 반복하는 루프 설정
+        train(model, epoch, log_interval)    # 'train'함수 호출하여 모델 학습 / 에폭과 로그 출력 빈도 전달
+        test(model, epoch)  # 'test'함수 호출하여 모델 평가 / 에폭 전달
+        scheduler.step()  # 스케줄러 업데이트 (학습률 조절하는 역할)
+
+# Let's plot the training loss versus the number of iteration.  
+# plt.plot(losses);  학습이 완료되면 'losses' 리스트에 저장된 학습 손실 값을 그래프로 시각화 할 수 있다.
+# plt.title("training loss");
+
+
+def predict(tensor): # 입력된 오디오 웨이브폼에 대해 모델을 사용하여 레이블을 예측
+    tensor = tensor.to(device)  # 입력된 'tensor'를 지정된 디바이스로 이동
+    tensor = transform(tensor)  # 'transform' 사용 -> 데이터 변환 ( 데이터를 모델과 호환하는 형식으로 변환)
+    # 변환된 데이터르 모델에 전달하여 예측값을 얻음
+    tensor = model(tensor.unsqueeze(0))   # unsqueeze(0): 배치 차원을 추가하여 모델에 배치로 전달하는 역할
+    # 모델은 배치 단위로 입력 처리하므로 배치 차원이 필요함
+    tensor = get_likely_index(tensor)  # 모델의 출력값을 'get_likely_index' 함수를 사용하여 가장 확률이 높은 레이블의 인덱스를 얻는다
+    tensor = index_to_label(tensor.squeeze())  # 'index_to_label'함수 사용하여 예측된 인덱스를 레이블로 변환하고 반환
+    return tensor
+
+
+waveform, sample_rate, utterance, *_ = train_set[-1]  # 데이터 셋의 마지막 데이터 포인트( 오디오 웨이브폼, 샘플 속도, 레이블 등의 정보 포함) 가져옴 
+ipd.Audio(waveform.numpy(), rate=sample_rate)  # 선택한 오디오 웨이브폼을 재생하는 역할 / 이를 통해 해당 오디오를 들을 수 있음
+
+print(f"Expected: {utterance}. Predicted: {predict(waveform)}.")  # 'predict(waveform)' 호출 -> 모델을 사용하여 예상된 레이블 얻고 예상된 레이블과 실제 레이블 출력
+
+# 모델이 test_set에서 얼마나 정확하게 예측하는지 알 수 있음
+for i, (waveform, sample_rate, utterance, *_) in enumerate(test_set):   # 'test_set' 반복, 인덱스와 각 데이터 포인트 순회
+    output = predict(waveform)     
+    if output != utterance:    # 예측된 레이블과 실제 레이블을 비교하고, 만약 그 값이 다르면 해당 데이터 포인트가 오분류 된 것으로 판단
+        ipd.Audio(waveform.numpy(), rate=sample_rate)
+        print(f"Data point #{i}. Expected: {utterance}. Predicted: {output}.")
+        break   # 만약 오분류된 데이터 포인트를 찾았을 경우, 해당 오디오 웨이브폼을 재생하고, 예상된 레이블과 예측된 레이블 출력
+else:
+    print("All examples in this dataset were correctly classified!")
+    print("In this case, let's just look at the last data point")
+    ipd.Audio(waveform.numpy(), rate=sample_rate)
+    print(f"Data point #{i}. Expected: {utterance}. Predicted: {output}.")
+    # 만약 모든 데이터 포인트가 올바르게 분류되었다면 "All examples in this~" 출력하고, 마지막 데이터 포인트를 출력한다
+
+
+# Google Colab 환경에서 마이크로 오디오를 녹음하고, 그 녹음된 오디오 데이터를 모델에 입력하여 예측한 결과를 출력하는 기능을 수행한다.
+def record(seconds=1):  # Colab 환경에서 마이크를 사용하여 오디오를 녹음하는 기능 구현. 녹음할 시간(초)을 입력으로 받고, 녹음된 오디오 데이터 반환
+
+    from google.colab import output as colab_output
+    from base64 import b64decode
+    from io import BytesIO
+    from pydub import AudioSegment
+
+    RECORD = (
+        b"const sleep  = time => new Promise(resolve => setTimeout(resolve, time))\n"
+        b"const b2text = blob => new Promise(resolve => {\n"
+        b"  const reader = new FileReader()\n"
+        b"  reader.onloadend = e => resolve(e.srcElement.result)\n"
+        b"  reader.readAsDataURL(blob)\n"
+        b"})\n"
+        b"var record = time => new Promise(async resolve => {\n"
+        b"  stream = await navigator.mediaDevices.getUserMedia({ audio: true })\n"
+        b"  recorder = new MediaRecorder(stream)\n"
+        b"  chunks = []\n"
+        b"  recorder.ondataavailable = e => chunks.push(e.data)\n"
+        b"  recorder.start()\n"
+        b"  await sleep(time)\n"
+        b"  recorder.onstop = async ()=>{\n"
+        b"    blob = new Blob(chunks)\n"
+        b"    text = await b2text(blob)\n"
+        b"    resolve(text)\n"
+        b"  }\n"
+        b"  recorder.stop()\n"
+        b"})"
+    )
+    RECORD = RECORD.decode("ascii")
+
+    print(f"Recording started for {seconds} seconds.")
+    display(ipd.Javascript(RECORD))
+    s = colab_output.eval_js("record(%d)" % (seconds * 1000))
+    print("Recording ended.")
+    b = b64decode(s.split(",")[1])
+
+    fileformat = "wav"
+    filename = f"_audio.{fileformat}"
+    AudioSegment.from_file(BytesIO(b)).export(filename, format=fileformat)
+    return torchaudio.load(filename)
+
+
+if "google.colab" in sys.modules:
+    waveform, sample_rate = record()
+    print(f"Predicted: {predict(waveform)}.")
+    ipd.Audio(waveform.numpy(), rate=sample_rate)
+
+
+
+
+
+# 단 한번도 맞게 출력된 적이 없었다.. 
+
