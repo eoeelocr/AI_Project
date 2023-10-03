@@ -1,7 +1,7 @@
 # Speech Command Classificaion with torchaudio
 # 이 튜토리얼에서는 오디오 데이터 세트의 형식을 올바르게 지정한 다음 데이터 세트에서 오디오 분류기 네트워크를 훈련/테스트하는 방법을 보여준다.
 
-# 웹사이트의 지침에 따라 설치할 수 있는 torchaudio와 같은 일반적인 토치 패키지를 가져온다.
+# 웹사이트의 지침에 따라 설치할 수 있는 torchaudio와 같은 일반적인 토치 패키지를 가져온다
 
 # Google Colab에서는 CPU 및 GPU 런타임을 선택 할 수 있다. 원하는 런타임에 따라 하나의 줄을 주석 처리 설정
 CPU:  # CPU 런타임용
