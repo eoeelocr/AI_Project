@@ -1,6 +1,7 @@
 # AI_Project
 
 ![Attention is all you need 논문 발표자료_0001](https://github.com/eoeelocr/AI_Project/assets/113348927/242d7888-bbae-482e-b4a2-3cffa8880e84)
+안녕
 ![Attention is all you need 논문 발표자료_0002](https://github.com/eoeelocr/AI_Project/assets/113348927/da9a2ca2-d4df-45be-99f5-0e941590de19)
 ![Attention is all you need 논문 발표자료_0003](https://github.com/eoeelocr/AI_Project/assets/113348927/59107feb-e57a-454c-9df9-6de4f7486b17)
 ![Attention is all you need 논문 발표자료_0004](https://github.com/eoeelocr/AI_Project/assets/113348927/d955ebd4-b903-43cf-9024-b2d5b64d43fc)
